@@ -20,8 +20,10 @@
                     method))
 
 (defun imbot--active-p ()
-  (not (equal (fcitx5-dbus-call-method "State")
-              imbot-english-engine-tag)))
+  (let ((event last-input-event))
+    (not (equal (fcitx5-dbus-call-method "State")
+                imbot-english-engine-tag))
+    (setq last-input-event event)))
 
 (defun imbot--activate ()
   (unless imbot--active-checked
