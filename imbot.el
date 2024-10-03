@@ -19,7 +19,7 @@
 ;; emacs uses xim, make sure environment variables are set correctly, in case of ibus, eg:
 ;; export XIM="ibus"
 ;; export XIM_PROGRAM="ibus"
-;; ibus is slow in restoring application im state, make sure to share ibus state in all apllications 
+;; ibus is slow in restoring application im state, make sure to share ibus state in all apllications
 ;; 1. redefine these functions according to your input method manager:
 ;;    imbot--active-p, imbot--activate, imbot--deactivate
 ;; 2. disable inline english with:
@@ -51,7 +51,7 @@
   "User config file with the definition of `imbot--active-p, `imbot--activate, `imbot--deactivate.")
 
 ;; check im method status in focus in and focus out hook, if the input method status per application not set
-(defvar imbot--active-omit-check t
+(defvar imbot--active-omit-check nil
   "Omit setting imbot--active-checked when t, check on every command when nil.
 
 Checking at every command execution may cause the pre-command-function removed from pre-command-hook
@@ -64,11 +64,12 @@ may be a better solution.")
   "Set cursor color according to input method state."
   (if imbot--active-checked
       (set-cursor-color "green")
-    (set-cursor-color "white")))
+    (set-cursor-color "white"))
+  (redisplay t))
 
 ;; disable imbot-mode before looking up key definition start with imbot--prefix-override-keys
 (defvar imbot--prefix-override-keys
-  '("C-c" "C-x" "C-h" "<f1>")
+  '("C-c" "C-x" "<f1>")
   "Prefix keys not handled by input method, which disable input method temperarily.")
 
 (defvar imbot--prefix-override-map-alist nil
@@ -100,16 +101,18 @@ may be a better solution.")
   "Prefix key handler with ARG."
   (interactive "P")
   ;; pre-command-hook is run before this function
-  (let* ((keys (this-command-keys)))
+  (let* ((keys (this-command-keys))
+         (last-command-before-prefix real-last-command))
     (unless imbot--active-omit-check
-      ;; remove prefix override to avoid recusion, will be added in post-command-hook
+      ;; remove prefix override to avoid recursion, will be added in post-command-hook
       (imbot--prefix-override-remove))
-    ;; (imbot--track-state "in prefix override!")
-    ;; post-command-hook not run after the first key event?
-    (imbot--deactivate)
+    ;; deactivate imbot in post-command-hook, run after the first key event
     ;; Restore the prefix arg
     (setq prefix-arg arg)
+    ;; binding in `emulation-mode-map-alists has no real-this-command, no real-last-command
     (setq last-command 'imbot--prefix-override-handler)
+    ;; preserve last-command
+    (setq this-command real-last-command)
     (prefix-command-preserve-state)
     ;; Push the key back on the event queue
     (setq unread-command-events
@@ -122,7 +125,7 @@ may be a better solution.")
 (defvar imbot--inline-cursor '(hbar . 4)
   "Inline english cursor.")
 
-(defface imbot--inline-face '()
+(defface imbot--inline-face '((t (:underline t :box nil)))
   "Face to show inline english (input method temperarily disabled) is active."
   :group 'imbot)
 
@@ -209,29 +212,28 @@ may be a better solution.")
   "Enable suppression if any variables in this list is t, add evil-normal-state-minor-mode
 evil-visual-state-minor-mode evil-motion-state-minor-mode if evil is used")
 
-(defvar imbot--suppression-major-mode
-  '(dired-mode debugger-mode)
-  "Enable suppression if buffer's major-mode matches any element of this list.")
-
-(defun imbot--prefix-override-p ()
+(defun imbot--in-key-seq-p ()
   "This-command becomes non nil after prefix sequence completion."
   (or
-   ;; first lookup of imbot--prefix-override-keys?
-   ;; second lookup of the pushed back imbot--prefix-override-keys?
    (equal last-command 'imbot--prefix-override-handler)
-   (equal real-this-command 'imbot--prefix-override-handler)
    ;; use C-g to disable repeat popup
    (and repeat-mode repeat-in-progress)
    (memq last-command '(er/expand-region er/contract-region))))
 
 (defvar imbot--suppression-predicates
-  (list #'imbot--english-p #'imbot--prefix-override-p)
+  (list #'imbot--english-p #'imbot--in-key-seq-p)
   "Conditions in which input method should be suppressed, in order of priority.")
 
 (defvar imbot--suppressed nil
   "Buffer local suppression state.")
 
 (make-variable-buffer-local 'imbot--suppressed)
+
+(defun imbot--check-supression-state ()
+  "expensive check"
+  (setq imbot--suppressed
+        (or (eval `(or ,@imbot--suppression-watch-list))
+            (seq-find 'funcall imbot--suppression-predicates nil))))
 
 (defun imbot--check-only ()
   ;; (message "Check and update checked status only!")
@@ -240,8 +242,7 @@ evil-visual-state-minor-mode evil-motion-state-minor-mode if evil is used")
 (defun imbot--check-on-im-toggle ()
   ;; (message "Check and update saved status!")
   (setq imbot--active-checked (imbot--active-p))
-  (setq imbot--active-saved imbot--active-checked)
-  (imbot--update-cursor))
+  (setq imbot--active-saved imbot--active-checked))
 
 (defun imbot--activate ()
   (if imbot--active-omit-check
@@ -259,22 +260,22 @@ evil-visual-state-minor-mode evil-motion-state-minor-mode if evil is used")
 ;; won't work in windows if per app input status is on
 ;; the toggle with w32-set-ime-open-status will be undone
 ;; try im-select.exe?
-(defun imbot-toggle-im ()
+(defun imbot-toggle ()
   (interactive)
   (if (imbot--active-p)
       (progn
-        (imbot--activate-force)
-        (setq imbot--active-saved t))
+        (imbot--deactivate-force)
+        (setq imbot--active-saved nil))
     (progn
-      (imbot--deactivate-force)
-      (setq imbot--active-saved nil))))
+      (imbot--activate-force)
+      (setq imbot--active-saved t)))
+  (run-at-time 0.1 nil 'imbot--update-cursor))
 
 (defun imbot--pre-command-function ()
   "pre-command-hook function to update imbot--active-saved."
   ;; (add-hook 'post-command-hook #'imbot--post-command-function -100)
   (if buffer-read-only
-      (setq imbot--suppressed t
-            imbot--active-saved nil)
+      (setq imbot--active-saved nil)
     (if imbot--active-omit-check
         (unless imbot--suppressed
           (setq imbot--active-saved imbot--active-checked))
@@ -285,46 +286,47 @@ evil-visual-state-minor-mode evil-motion-state-minor-mode if evil is used")
               (imbot--check-only)
             (imbot--check-on-im-toggle)))))))
 
-;; unless (equal real-this-command 'imbot-toggle-im)
 (defun imbot--post-command-function ()
   "Restore input state."
   ;; When an editing command returns to the editor command loop, the buffer is still the original buffer,
   ;; buffer change after Emacs automatically calls set-buffer on the buffer shown in the selected window.
   ;; unless (equal 'real-this-command 'self-insert-command)
-  (run-with-timer 0 nil
-                  ;; in command that changes buffer, like winner-undo, the timer is run with the target window
-                  (lambda ()
-                    ;; (imbot--track-state "in post-command hook!")
-                    (when (or imbot--active-saved
-                              imbot--suppressed
-                              imbot--active-checked)
-                      ;; (imbot--track-state "in post-command timer!")
-                      (if (or (eval `(or ,@imbot--suppression-watch-list))
-                              (member major-mode imbot--suppression-major-mode)
-                              (seq-find 'funcall imbot--suppression-predicates nil))
-                          (progn (setq imbot--suppressed t)
-                                 ;; (imbot--track-state "in post-command suppress!")
-                                 ;; (imbot--track-state (format  "in post-command suppress by %s!"
-                                 ;;                       (seq-find 'funcall
-                                 ;;                         imbot--suppression-predicates nil)))
-                                 (imbot--deactivate))
-                        (when imbot--active-saved
-                          ;; (imbot--track-state "restore input state!")
-                          (imbot--activate))
-                        (setq imbot--suppressed nil)))
-                    ;; put this on an idle timer?
-                    (unless imbot--active-omit-check
-                      (unless (equal last-command 'imbot--prefix-override-handler)
-                        (imbot--prefix-override-add)))
-                    ;; (add-hook 'pre-command-hook #'imbot--pre-command-function -100)
-                    (imbot--update-cursor))))
+  (unless (or (eq real-this-command 'imbot--inline-english-quit)
+              (eq real-this-command 'imbot--inline-english-deactivate)
+              ;; (eq real-this-command 'imbot-toggle)
+              )
+    ;; hook not run in command after imbot-toggle?
+    ;; in the timer, this-command is now last-command?
+    (run-with-timer
+     0 nil
+     ;; in command that changes buffer, like winner-undo, the timer is run with the target window
+     (lambda (last-command-in)
+       (let ((last-command last-command-in))
+         ;; (notify "post command hook" (format "real this %s command in %s real last %s last %s active-p %s"
+         ;;                                     real-this-command
+         ;;                                     last-command-in
+         ;;                                     real-last-command
+         ;;                                     last-command
+         ;;                                     (imbot--active-p)))
+         (if imbot--active-checked
+             (when (or (not imbot--active-saved) (imbot--check-supression-state))
+               (imbot--deactivate))
+           (if (and imbot--active-saved (not (imbot--check-supression-state)))
+               (imbot--activate)))
+         ;; put this on an idle timer?
+         (unless (or imbot--active-omit-check
+                     (equal last-command 'imbot--prefix-override-handler))
+           (when imbot-mode (imbot--prefix-override-add)))
+         ;; (add-hook 'pre-command-hook #'imbot--pre-command-function -100)
+         (imbot--update-cursor)))
+     last-command)))
 
-(defvar imbot-post-command-hook-list '(post-command-hook dired-mode-hook)
+(defvar imbot-post-command-hook-list '(post-command-hook)
   "List of hook names to add `imbot--post-command-function into.")
 
 (defun imbot--hook-handler (add-or-remove)
   "Setup hooks, ADD-OR-REMOVE."
-  (funcall add-or-remove 'minibuffer-setup-hook 'imbot--deactivate)
+  ;; (funcall add-or-remove 'minibuffer-setup-hook 'imbot--deactivate-force)
   (funcall add-or-remove 'minibuffer-exit-hook 'imbot--post-command-function)
   ;; add to "global" pre-command-hook
   (funcall add-or-remove 'pre-command-hook #'imbot--pre-command-function)
@@ -347,11 +349,13 @@ evil-visual-state-minor-mode evil-motion-state-minor-mode if evil is used")
         (imbot--hook-handler 'add-hook)
         (imbot--prefix-override-add)
         ;; (debug-watch 'imbot-mode)
+        (add-hook 'focus-in-hook 'imbot--check-only)
         (dolist (trigger imbot--prefix-reinstate-triggers)
           (advice-add trigger :after #'imbot--prefix-override-add)))
     (advice-remove #'execute-kbd-macro #'imbot--non-interactive)
     (imbot--hook-handler 'remove-hook)
     (imbot--prefix-override-remove)
+    (remove-hook 'focus-in-hook 'imbot--check-only)
     (dolist (trigger imbot--prefix-reinstate-triggers)
       (advice-remove trigger #'imbot--prefix-override-add))))
 
