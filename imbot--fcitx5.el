@@ -6,6 +6,8 @@
 
 (require 'dbus)
 
+(defvar imbot--active-checked nil)
+
 (setq imbot-command (or (locate-file "fcitx5-remote" exec-path)
                         "fcitx-remote")
       imbot-english-engine-tag 1

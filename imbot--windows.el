@@ -4,6 +4,8 @@
 ;; this config file redefines:
 ;; imbot--active-p, imbot--activate, imbot--deactivate
 
+(defvar imbot--active-checked nil)
+
 (defun imbot--active-p ()
   (w32-get-ime-open-status))
 
