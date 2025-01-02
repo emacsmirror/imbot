@@ -168,8 +168,9 @@
 (defun imbot--english-p ()
   "Check context."
   ;; (imbot--track-state "in english context checking!")
-  (or (imbot--english-region-p)
-      (imbot--english-context-p)))
+  (unless (equal major-mode 'dired-mode)
+    (or (imbot--english-region-p)
+        (imbot--english-context-p))))
 
 (defvar god-local-mode nil)
 
@@ -228,17 +229,15 @@ evil-visual-state-minor-mode evil-motion-state-minor-mode if evil is used")
      ;; in command that changes buffer, like winner-undo, the timer is run with the target window
      (lambda (last-command-in)
        (let ((last-command last-command-in))
-         ;; (notify "post command hook" (format "real this %s command in %s real last %s last %s active-p %s"
+         ;; (notify "post command hook" (format "real this %s command in %s real last %s last %s"
          ;;                                     real-this-command
          ;;                                     last-command-in
          ;;                                     real-last-command
-         ;;                                     last-command
-         ;;                                     (imbot--active-p)))
-         (if (imbot--check-supression-state)
-             (imbot--deactivate-force)
-           (if imbot--active-saved
-               (imbot--activate-force)
-             (imbot--deactivate-force)))
+         ;;                                     last-command))
+         (when imbot--active-saved
+           (if (imbot--check-supression-state)
+               (imbot--deactivate-force)
+             (imbot--activate-force)))
          ;; put this on an idle timer?
          (unless (equal last-command 'imbot--prefix-override-handler)
            (when imbot-mode (imbot--prefix-override-add)))
