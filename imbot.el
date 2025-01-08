@@ -55,14 +55,20 @@
 
 (defun imbot--prefix-override-add (&optional _args)
   "Setup `emulation-mode-map-alist."
-  (add-to-list 'emulation-mode-map-alists 'imbot--prefix-override-map-alist))
+  (add-to-list 'emulation-mode-map-alists 'imbot--prefix-override-map-alist)
+  (dolist (fun imbot--prefix-reinstate-functions)
+    (when (boundp fun)
+      (advice-add fun :after #'imbot--prefix-override-add))))
 
 (defun imbot--prefix-override-remove (&optional _args)
   "Unset `emulation-mode-map-alist."
   (setq emulation-mode-map-alists
-        (delq 'imbot--prefix-override-map-alist emulation-mode-map-alists)))
+        (delq 'imbot--prefix-override-map-alist emulation-mode-map-alists))
+  (dolist (fun imbot--prefix-reinstate-functions)
+    (when (boundp fun)
+      (advice-remove fun #'imbot--prefix-override-add))))
 
-(defvar imbot--prefix-reinstate-triggers
+(defvar imbot--prefix-reinstate-functions
   '(yas-minor-mode eaf-mode)
   "Handle modes that mess `emulation-mode-map-alists, add evil-local-mode if you use evil.")
 
@@ -117,7 +123,8 @@
 
 (defun imbot--english-context-p ()
   "Return t if English should be inputed at cursor point."
-  (unless (eq last-command 'imbot--inline-english-deactivate)
+  (unless (and (eq last-command 'imbot--inline-english-deactivate)
+               (eq last-command 'imbot-toggle))
     (let* ((line-beginning (line-beginning-position))
            (point (point))
            (overlay-active (overlayp imbot--overlay))
@@ -168,9 +175,8 @@
 (defun imbot--english-p ()
   "Check context."
   ;; (imbot--track-state "in english context checking!")
-  (unless (equal major-mode 'dired-mode)
-    (or (imbot--english-region-p)
-        (imbot--english-context-p))))
+  (or (imbot--english-region-p)
+      (imbot--english-context-p)))
 
 (defvar god-local-mode nil)
 
@@ -193,64 +199,78 @@ evil-visual-state-minor-mode evil-motion-state-minor-mode if evil is used")
   (list #'imbot--english-p #'imbot--in-key-seq-p)
   "Conditions in which input method should be suppressed, in order of priority.")
 
-(defun imbot--check-supression-state ()
+(defun imbot--supress-p ()
   "expensive check"
   (or (eval `(or ,@imbot--suppression-watch-list))
       (seq-find 'funcall imbot--suppression-predicates nil)))
 
 (defvar imbot--update-cursor-timer (timer--create))
+
 ;; won't work in windows if per app input status is on
 ;; the toggle with w32-set-ime-open-status will be undone
 ;; try im-select.exe?
 (defun imbot-toggle ()
   (interactive)
-  (if imbot--active-saved
+  (unless (equal major-mode 'dired-mode)
+    (if imbot--active-saved
+        (progn
+          (imbot--deactivate-force)
+          (setq imbot--active-saved nil))
       (progn
-        (imbot--deactivate-force)
-        (setq imbot--active-saved nil))
-    (progn
-      (imbot--activate-force)
-      (setq imbot--active-saved t)))
-  (unless (equal major-mode 'exwm-mode)
-    (setq imbot--update-cursor-timer (run-with-idle-timer 0.3 nil 'imbot--update-cursor))))
+        (imbot--activate-force)
+        (setq imbot--active-saved t)))
+    (unless (equal major-mode 'exwm-mode)
+      (setq imbot--update-cursor-timer (run-with-idle-timer 0.3 nil 'imbot--update-cursor)))))
+
+(defun imbot--check ()
+  ;; in the timer, this-command is now last-command?
+  (run-with-timer
+   0 nil
+   ;; in command that changes buffer, like winner-undo, the timer is run with the target window
+   (lambda (command)
+     (let ((last-command command))
+       ;; (message (format "current buffer %s; im saved %s; command in %s; supress %s; real this %s; real last %s"
+       ;;                  (current-buffer)
+       ;;                  imbot--active-saved
+       ;;                  command
+       ;;                  (imbot--supress-p)
+       ;;                  real-this-command
+       ;;                  real-last-command))
+       (if (equal major-mode 'dired-mode)
+           (progn (imbot--deactivate-force)
+                  (setq imbot--active-saved nil))
+         (if imbot--active-saved
+             (if (imbot--supress-p)
+                 (imbot--deactivate-force)
+               (imbot--activate-force))
+           (imbot--deactivate-force)))
+       ;; put this on an idle timer?
+       (unless (equal last-command 'imbot--prefix-override-handler)
+         (imbot--prefix-override-add))
+       (imbot--update-cursor)))
+   last-command))
 
 (defun imbot--post-command-function ()
   "Restore input state."
+  ;; hook not run in command after imbot-toggle?
   ;; When an editing command returns to the editor command loop, the buffer is still the original buffer,
   ;; buffer change after Emacs automatically calls set-buffer on the buffer shown in the selected window.
   ;; unless (equal 'real-this-command 'self-insert-command)
   (unless (or ;; (eq real-this-command 'imbot-toggle)
            (eq real-this-command 'imbot--inline-english-quit)
            (eq real-this-command 'imbot--inline-english-deactivate))
-    ;; hook not run in command after imbot-toggle?
-    ;; in the timer, this-command is now last-command?
-    (run-with-timer
-     0 nil
-     ;; in command that changes buffer, like winner-undo, the timer is run with the target window
-     (lambda (last-command-in)
-       (let ((last-command last-command-in))
-         ;; (notify "post command hook" (format "real this %s command in %s real last %s last %s"
-         ;;                                     real-this-command
-         ;;                                     last-command-in
-         ;;                                     real-last-command
-         ;;                                     last-command))
-         (when imbot--active-saved
-           (if (imbot--check-supression-state)
-               (imbot--deactivate-force)
-             (imbot--activate-force)))
-         ;; put this on an idle timer?
-         (unless (equal last-command 'imbot--prefix-override-handler)
-           (when imbot-mode (imbot--prefix-override-add)))
-         (imbot--update-cursor)))
-     last-command)))
+    (imbot--check)))
 
-(defvar imbot-post-command-hook-list '(post-command-hook)
+(defvar imbot-post-command-hook-list '(post-command-hook minibuffer-exit-hook)
   "List of hook names to add `imbot--post-command-function into.")
+
+(defun imbot--deactivate ()
+  (imbot--deactivate-force)
+  (setq imbot--active-saved nil))
 
 (defun imbot--hook-handler (add-or-remove)
   "Setup hooks, ADD-OR-REMOVE."
-  ;; (funcall add-or-remove 'minibuffer-setup-hook 'imbot--deactivate-force)
-  (funcall add-or-remove 'minibuffer-exit-hook 'imbot--post-command-function)
+  (funcall add-or-remove 'minibuffer-setup-hook 'imbot--deactivate)
   ;; add to "global" post-command-hook
   (dolist (hook-name imbot-post-command-hook-list)
     (funcall add-or-remove hook-name #'imbot--post-command-function)))
@@ -260,6 +280,15 @@ evil-visual-state-minor-mode evil-motion-state-minor-mode if evil is used")
         (post-command-hook nil))
     (apply orig-func args)))
 
+(defun imbot-describe-key ()
+  (interactive)
+  (progn
+    (imbot-mode -1)
+    (if (functionp 'helpful-key)
+        (call-interactively 'helpful-key)
+      (call-interactively 'describe-key))
+    (imbot-mode 1)))
+
 ;;;###autoload
 (define-minor-mode imbot-mode
   "Input method managing bot."
@@ -268,16 +297,14 @@ evil-visual-state-minor-mode evil-motion-state-minor-mode if evil is used")
   (if imbot-mode
       (progn
         (advice-add #'execute-kbd-macro :around #'imbot--non-interactive)
+        (add-function :after after-focus-change-function 'imbot--check)
         (imbot--hook-handler 'add-hook)
-        (imbot--prefix-override-add)
         ;; (debug-watch 'imbot-mode)
-        (dolist (trigger imbot--prefix-reinstate-triggers)
-          (advice-add trigger :after #'imbot--prefix-override-add)))
+        (imbot--prefix-override-add))
     (advice-remove #'execute-kbd-macro #'imbot--non-interactive)
+    (remove-function after-focus-change-function 'imbot--check)
     (imbot--hook-handler 'remove-hook)
-    (imbot--prefix-override-remove)
-    (dolist (trigger imbot--prefix-reinstate-triggers)
-      (advice-remove trigger #'imbot--prefix-override-add))))
+    (imbot--prefix-override-remove)))
 
 (provide 'imbot)
 ;;; imbot.el ends here

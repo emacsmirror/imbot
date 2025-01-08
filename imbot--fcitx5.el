@@ -20,7 +20,8 @@
                                   "org.fcitx.Fcitx5"
                                   "/controller"
                                   "org.fcitx.Fcitx.Controller1"
-                                  method)))
+                                  method
+                                  :timeout 600)))
     (setq last-input-event event)
     result))
 
